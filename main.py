@@ -1,39 +1,101 @@
-from pytube import YouTube
-from pytube.contrib.search import Search
-from youtube_transcript_api import YouTubeTranscriptApi
+import requests
 import re
-import certifi
+from bs4 import BeautifulSoup
+from urllib.parse import urljoin
+import urllib.request
 import os
-os.environ['SSL_CERT_FILE'] = certifi.where()
+import subprocess
 
-def analyze_sca_pronunciation(query="Software Composition Analysis", num_videos=10):
+def download_audio_video(url, output_dir="downloads"):
+    """Downloads audio and video files from a given URL."""
     try:
-        s = Search(query)
-        s.results #this line forces the search to happen.
-        video_ids = [result.video_id for result in s.results[:num_videos]] # get video id's
-        sca_count_sca = 0
-        sca_count_skaw = 0
+        response = requests.get(url)
+        response.raise_for_status()  # Raise HTTPError for bad responses (4xx or 5xx)
+        soup = BeautifulSoup(response.content, "html.parser")
 
-        for video_id in video_ids:
-            try:
-                transcript = YouTubeTranscriptApi.get_transcript(video_id)
-                full_transcript = " ".join([item['text'] for item in transcript])
+        # Find audio and video tags
+        audio_tags = soup.find_all("audio")
+        video_tags = soup.find_all("video")
 
-                sca_count_sca += len(re.findall(r"\bS\s*[-.]?\s*C\s*[-.]?\s*A\b", full_transcript, re.IGNORECASE))
-                sca_count_skaw += len(re.findall(r"\bskaw\b", full_transcript, re.IGNORECASE))
+        if not os.path.exists(output_dir):
+            os.makedirs(output_dir)
 
-            except Exception as transcript_error:
-                print(f"Error processing transcript for video {video_id}: {transcript_error}")
+        for tag in audio_tags + video_tags:
+            src = tag.get("src")
+            if src:
+                if not src.startswith("http"): #handle relative paths
+                    src = urljoin(url, src)
 
-        return sca_count_sca, sca_count_skaw
+                filename = os.path.join(output_dir, src.split("/")[-1])
+                try:
+                    urllib.request.urlretrieve(src, filename)
+                    print(f"Downloaded: {filename}")
+                except Exception as e:
+                    print(f"Error downloading {src}: {e}")
 
-    except Exception as search_error:
-        print(f"Error during search or overall processing: {search_error}")
-        return None
+    except requests.exceptions.RequestException as e:
+        print(f"Error fetching URL: {e}")
+    except Exception as e:
+        print(f"An unexpected error occurred: {e}")
 
-if __name__ == "__main__":
-    counts = analyze_sca_pronunciation()
-    if counts:
-        sca_count, skaw_count = counts
-        print(f"Count of 'S-C-A': {sca_count}")
-        print(f"Count of 'skaw': {skaw_count}")
+def transcribe_audio(audio_file):
+    """Transcribes audio using a local speech-to-text tool (e.g., whisper)."""
+    try:
+        # Replace with your actual speech-to-text command
+        # This example uses whisper. Ensure it's installed and in your PATH.
+        command = ["whisper", audio_file, "--model", "base.en"] #or small, medium, large.en
+        process = subprocess.run(command, capture_output=True, text=True, check=True)
+        return process.stdout
+    except FileNotFoundError:
+        return "Whisper not found. Ensure it is installed and in your PATH."
+    except subprocess.CalledProcessError as e:
+        return f"Error during transcription: {e.stderr}"
+    except Exception as e:
+        return f"An unexpected error occurred: {e}"
+
+def count_sca_pronunciations(text):
+    """Counts "S-C-A", "Software Composition Analysis", and one-syllable pronunciations in the transcribed text."""
+    sca_count = len(re.findall(r"\bS-C-A\b|\bS\.C\.A\b|\bS C A\b", text, re.IGNORECASE))
+    long_form_count = len(re.findall(r"\bSoftware Composition Analysis\b", text, re.IGNORECASE))
+
+    # More comprehensive regex for one-syllable pronunciations
+    # This tries to capture variations that sound like "ska", "scah", etc.
+    # It's still challenging to be exhaustive without phonetic analysis.
+    one_syllable_count = len(re.findall(r"\b(ska|scah|skuh|sko|skaw|skee)\b", text, re.IGNORECASE))
+
+    return sca_count, long_form_count, one_syllable_count
+
+def process_url(url):
+    """Downloads audio/video, transcribes, and counts pronunciations for a URL."""
+    download_audio_video(url)
+
+    audio_files = [f for f in os.listdir("downloads") if f.lower().endswith((".mp3", ".wav", ".ogg", ".flac", ".m4a"))] #add other audio extensions as needed.
+    total_sca_count = 0
+    total_long_form_count = 0
+    total_one_syllable_count = 0
+
+    for audio_file in audio_files:
+        audio_path = os.path.join("downloads", audio_file)
+        transcription = transcribe_audio(audio_path)
+        print(f"Transcription of {audio_file}:\n{transcription}")
+
+        sca_count, long_form_count, one_syllable_count = count_sca_pronunciations(transcription)
+        total_sca_count += sca_count
+        total_long_form_count += long_form_count
+        total_one_syllable_count += one_syllable_count
+
+    print(f"\nTotal S-C-A pronunciations: {total_sca_count}")
+    print(f"Total \"Software Composition Analysis\" mentions: {total_long_form_count}")
+    print(f"Total one-syllable (approximate) pronunciations: {total_one_syllable_count}")
+
+# Example usage:
+# process_url("YOUR_URL_HERE") # Replace with the URL you want to process.
+
+# Example of how to iterate through many urls.
+urls = [
+    "YOUR_URL_1_HERE",
+    "YOUR_URL_2_HERE",
+    # Add more URLs as needed
+]
+for url in urls:
+    process_url(url)
